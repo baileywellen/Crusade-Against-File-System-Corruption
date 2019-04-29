@@ -1,0 +1,83 @@
+#include <iostream>
+#include <fstream>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
+//#include "my_stat.h"
+#include "fs.h"
+#include "types.h"
+
+using namespace std;
+
+std::ifstream::pos_type filesize(const char* filename)
+{
+    std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
+    return in.tellg(); 
+}
+
+bool valid_size(superblock* s, uint size)
+{
+    bool ret = true;
+    //convert from bytes into blocks
+    size = size / BSIZE;
+    if (s->size != size)
+    {
+        cout << "invalid file size" << endl;
+        ret = false;
+    }
+    return ret;
+}
+
+
+int main(int argc, char* argv[])
+{
+	if (argc < 2)
+	{
+		cout << "not enough arguments entered" << endl;
+		exit(1);
+	}
+    int fd = open(argv[1], O_RDONLY);
+	if (fd == -1)
+	{
+		cout << "invalid file" << endl;
+		exit(1);
+	}
+
+    void* file_copy = mmap(0, BSIZE * 1024, PROT_READ, MAP_SHARED, fd, 0);
+    superblock * sb = (superblock*)(((char*)file_copy) + BSIZE);
+    cout << "Size of File System: " << sb->size << endl;
+    cout << "Number of Inodes: " <<  sb->ninodes << endl;
+    cout << "Number of Blocks: " << sb->nblocks << endl;
+    //check to make sure we have a valid sized file
+     int size = filesize(argv[1]); 
+    if (valid_size(sb, size) == false)
+        exit(1);
+
+
+
+    dinode * i_ptr = (dinode*)(((char*)file_copy) + (2 * BSIZE));
+    dinode* dinode_array[sb->ninodes];
+     for(uint i = 0; i < sb->ninodes - 1; i++)
+     {
+         dinode_array[i] = i_ptr;
+         i_ptr += sizeof(dinode);
+     }
+     cout << dinode_array[0]->addrs << endl;
+     cout << dinode_array[1]->addrs << endl;
+     cout << dinode_array[2]->addrs << endl;
+    cout << "dinode size: " <<  dinode_array[5]->size << endl;
+    // cout << "size of dirent : " << sizeof(dirent) << endl;
+    //will we loop through the inode array, calling each function on each inode to go check the bitmap for all the correct data? 
+
+
+
+    // what type is the bitmap pointer gonna be? 
+
+   //_____* bitmap = (_____*) (((char*)file_copy) + (2 * BSIZE) + (sb->ninodes / IPB));
+    
+    
+    //*dirent data = (dirent*) (((char*)file_copy) + (3 * BSIZE) + (sb->ninodes / IPB));
+
+    munmap(file_copy, BSIZE * 1024);
+	return 0;
+}
