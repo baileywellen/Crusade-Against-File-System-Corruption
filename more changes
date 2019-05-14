@@ -1,0 +1,494 @@
+/*      Bailey Wellen
+        Computer Organization Spring 2019
+        Project 6 - File Corruption */
+
+        
+#include <iostream>
+#include <fstream>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <vector>
+#include <algorithm>
+//#include "my_stat.h"
+#include "fs.h"
+#include "types.h"
+using namespace std;
+/* FILES THAT I KNOW THINGS ABOUT 
+
+1- . or .. inode is not a directory 
+2-
+3-
+4- invalid superblock size
+5-
+6-
+7- inode 80 has an invalid size 
+8- Block 65 is referenced by 2 inodes 
+9- inode 0 is allocated
+10-
+11-
+12-
+13-
+14- non-root directory lists itself as inode 1
+15-
+16-
+
+good- none!!! 
+
+
+
+*/
+struct myblock
+{
+    //marked_allocated - if the bitmap arary says that the data block is allocated, this will be true 
+    bool marked_allocated;
+    //dirent d;   
+};
+
+struct myinode
+{
+    uint link_count;
+    //bool marked_allocated - if it is 
+    bool marked_allocated;
+    //bool in-dir - if it is referenced in a directory, mark this as true 
+    bool in_dir;
+};
+
+struct mydirectory
+{
+    
+};
+
+std::ifstream::pos_type filesize(const char* filename)
+{
+    std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
+    return in.tellg(); 
+}
+//pass inode_valid_size the array of inodes 
+bool inode_valid_size(dinode* d[], uint size )
+{   
+    bool all_valid_sizes = true;
+    //check if each one's -size is < (512 * MAXFILE)
+    for (uint i = 0; i < size; i++)
+    {
+        if((d[i])->size > (512 * MAXFILE))
+        {
+            cout << "inode " << i << " has an invalid size " << endl;
+            all_valid_sizes = false;
+            break;
+        }
+    }
+    return all_valid_sizes;
+}
+void check_types(dinode* d[], uint size)
+{
+    for (uint i = 0; i <size; i++)
+    {
+        cout << "type is " <<  d[i]->type << endl;
+    }
+}
+bool valid_size(superblock* s, uint size)
+{
+    bool ret = true;
+    //convert from bytes into blocks
+    size = size / BSIZE;
+    if (s->size != size)
+    {
+        cout << "superblock contains an invalid size" << endl;
+        ret = false;
+    }
+    return ret;
+}
+//fill all four vectors - one of your directories and one of files, and then special and unused 
+void set_vectors(vector <dinode*> &directories, vector <dinode*> &files, vector <dinode*> &unused, vector <dinode*> &special, dinode * d[], vector <uint> blocks, uint size)
+{
+    cout << "SIZE: " << size << endl;
+    for(uint i = 0; i < size; i++)
+    {
+        //Unused
+        if (d[i]->type == 0)
+        {
+            unused.push_back(d[i]);
+        }
+        //Directory
+        else if(d[i]->type == 1)
+        {
+            directories.push_back(d[i]);
+        }
+        //File
+        else if(d[i]->type == 2)
+        {
+            files.push_back(d[i]);
+        }
+        //Directory
+        else if(d[i]->type == 3)
+        {
+            special.push_back(d[i]);
+        }
+
+        for(uint j = 0; j< NDIRECT; j++)
+        {
+            blocks.push_back(d[i]->addrs[j]);
+        }
+    }
+}
+bool check_inode_0(dinode* d[])
+{
+    bool ret = true;
+    if (d[0]->type != 0)
+    {
+        cout << "Inode 0 should not be allocated, but is" << endl;
+         ret = false;
+    }
+    return ret;
+}
+//check if inode one is not a directory 
+bool check_inode_1(dinode * d[])
+{
+    bool ret = true;
+    if (d[1]->type != 1)
+    {
+        cout << "Inode 1 is not a directory " << endl;
+         ret = false;
+    }
+    return ret;
+}
+//write a function that returns a bool - if the bit is 1, it returns true. if the bit is 0, it returns false 
+//bmap is a pointer to the bitmap
+//b is the 
+//ninodes is the number of inodes 
+struct find_bit
+{
+    uint block;
+    uint byte;
+    uint bit;
+};
+find_bit byte_offset(uint b, uint ninodes)
+{
+    find_bit this_bit;
+    //which block in BM?
+   // this_bit.block  = BBLOCK(b, ninodes) * BSIZE;
+    //which byte in that block? 
+    this_bit.byte = b / 8;
+
+    //which bit in that byte?
+    //use num % 8 to compute which bit s
+    this_bit.bit = b % 8;
+
+    return this_bit;
+}
+
+bool bit_is_on(uchar* bitmap_ptr, uint b, uint ninodes )
+{
+    find_bit offset = byte_offset(b, ninodes);
+    uchar* this_bit = bitmap_ptr + offset.block + offset.byte;
+    //byte&(0x1 << bn)
+    //return b & (0x1 << 1);
+    //where bn is how many times you want to shift it over 
+    bool bit_on = false;
+    if (((*this_bit >> offset.bit)& 0x01))
+    {
+        bit_on = true;
+    }
+
+    return bit_on;
+}
+// bool check_directories(vector <dinode*> inode_directories)
+// {
+//     vector <dirent*> directories;
+//     for(uint i = 0; i < inode_directories.size(); i++)
+//     {
+//         dirent* temp = inode_directories.at(i)->addrs;   
+//     }
+// }
+//make sure that the first two file names are . and .. 
+bool check_names(vector <dirent*> dirent_vec)
+{
+    bool ret = true;
+    //check if the first name is "."
+    if(dirent_vec.at(0)->name[0] != '.')
+    {
+        cout << "Directory " << dirent_vec.at(0)->inum << " does not have a first directory of \".\" " << endl;
+        ret = false;
+    }
+    //check if the second name is ".."
+    else if (dirent_vec.at(1)->name[0] != '.' || dirent_vec.at(1)->name[1] != '.')
+    {
+        cout << "Directory " << dirent_vec.at(1)->inum << " does not have a second directory of \"..\" " << endl;
+    }
+    return ret;
+}
+bool check_nonroot(vector <dirent*> dirent_vec)
+{
+    bool ret = true;
+    //skip the beginning "." and ".." files 
+    for(uint i = 2; i < dirent_vec.size(); i++)
+    {
+        //check if name is . and inode number is 1 
+         if(dirent_vec.at(i)->name[0] == '.' && dirent_vec.at(i)->name[1] != '.' && dirent_vec.at(i)->inum == 1)
+        {
+            cout << "A non-root directory lists \".\" (itself) as Inode 1 " << endl;
+            ret = false;
+            break;
+        }
+    }
+    return ret;
+}
+//directory appearing more than once not including . and ..
+bool check_repeat_directory(vector <dirent*> dirent_vec)
+{
+    vector <char*> names;
+    bool ret = true;
+    for(uint i = 0; i < dirent_vec.size(); i++)
+    {
+        //if the name is "." or "..", don't worry about it 
+        if(dirent_vec.at(i)->name[0] == '.')
+            continue;
+        //if there is a name that is repeated, return false 
+        if (std::find(names.begin(), names.end(), dirent_vec.at(i)->name) != names.end())
+        {
+            cout << "Directory " << dirent_vec.at(i)->name << " appears more than once. " << endl;
+            ret = false;
+            break;
+        }
+        else
+        {
+            names.push_back(dirent_vec.at(i)->name);
+        }
+        
+    }
+    return ret; 
+}
+bool check_multiply_allocated_block(dinode* d[], uint size)
+{
+    //vector <myaddrs> addresses;
+    vector <uint> addresses;
+    bool ret = true; 
+    for(uint i = 0; i < size; i++)
+    {
+        //cout << endl << "address : " ;
+        for(uint j = 0; j < NDIRECT; j++)
+        {
+            if (std::find(addresses.begin(), addresses.end(), d[i]->addrs[j]) != addresses.end() && d[i]->addrs[j] != 0)
+            {
+                cout << "Block " <<  d[i]->addrs[j] << " is referenced by inode " << i << " and another inode " << endl;
+                ret = false;
+                goto leave; 
+            }
+            else
+            {
+                addresses.push_back(d[i]->addrs[j]);
+            }
+        }
+    }
+
+leave:
+    return ret;
+}
+bool check_if_should_be_directory(vector<dirent*> dirent_vec, dinode* d[])
+{
+    bool ret = true;
+    for (uint i = 0; i < dirent_vec.size(); i++)
+    {
+        // if name is . or .. 
+        if(dirent_vec.at(i)->name[0] == '.')
+        {
+            if(d[dirent_vec.at(i)->inum]->type != 1)
+            {
+               cout << "Name of File in inode " << dirent_vec.at(i)->inum << " is \".\" or \"..\" but does not lead to a directory" << endl;
+               ret = false;
+               break;
+            }
+        }
+    }
+    return ret;
+}
+//I'm not sure how to do this 
+// bool check_link_count(vector <dirent*> dirent_vec, vector <uint> blocks)
+// {
+//     for(uint i = 0; i < dirent_vec.size(); i++)
+//     {
+//         uint actual_count = 0;
+//         for(uint j = 0; j < blocks.size(); j++)
+//         {
+//             if(blocks.)
+//         }
+//     }
+// }
+int main(int argc, char* argv[])
+{
+	if (argc < 2)
+	{
+		cout << "not enough arguments entered" << endl;
+		exit(1);
+	}
+    char* file = argv[1];
+    int fd = open(file, O_RDONLY);
+	if (fd == -1)
+	{
+		cout << "invalid file" << endl;
+		exit(1);
+	}
+
+    void * file_copy = mmap(0, BSIZE * 1024, PROT_READ, MAP_SHARED, fd, 0);
+    superblock * sb = (superblock*)(((char*)file_copy) + BSIZE);
+    cout << "File System Project " << endl;
+    cout << "Super Block Information : " << endl;
+    cout << "Size of File System: " << sb->size << endl;
+    cout << "Number of Inodes: " <<  sb->ninodes << endl;
+    cout << "Number of Blocks: " << sb->nblocks << endl;
+    cout << "Number of Log Blocks: " << sb->nlog << endl;
+    cout << "Block of log start: " << sb->logstart << endl;
+    cout << "Block of Inode Start: " << sb->inodestart << endl;
+    cout << "Block of Bitmap Start: " << sb->bmapstart << endl;
+
+    cout << endl;
+
+
+    //dinode * i_ptr = (dinode*)(((char*)sb) + (sb->nlog * BSIZE) + BSIZE);
+    dinode* i_ptr = (dinode*)((char*)file_copy + (sb->inodestart * BSIZE));
+    dinode* dinode_array[sb->ninodes];
+     for(uint i = 0; i < sb->ninodes - 1; i++)
+     {
+         dinode_array[i] = i_ptr;
+        // cout << "inode " << i << " has link count "  << dinode_array[i]->nlink << " and size of " << dinode_array[i]->size << " and type " << dinode_array[i]->type << endl;
+         i_ptr += 1;
+     }
+    
+     cout << "CHECK TYPES : " << endl;
+    //check_types(dinode_array, sb->ninodes - 1);
+    uchar* bitmap_ptr = (uchar*)((char*)file_copy + (sb->bmapstart * BSIZE));
+    uchar* bitmap[BSIZE];
+
+    //myinode bmap_inodes[BSIZE * 8];
+    myblock bitmap_blocks[BSIZE * 8];
+
+    //bool bmap[BSIZE * 8];
+
+    //for all bytes in the bitmap 
+    for(uint i = 0; i < BSIZE; i++)
+    {
+        bitmap[i] = bitmap_ptr;
+        for(uint j = 0; j < 8; j++)
+        {
+            bitmap_blocks[(i * 8) + j].marked_allocated = ((*bitmap[i]>>(7 - j))& 0x01);
+        }
+       bitmap_ptr++;
+      
+        // //right shift logicals below 
+        // cout << ((*bitmap[i]>>7)& 0x01);
+        // cout << ((*bitmap[i]>>6)& 0x01);
+        // cout << ((*bitmap[i]>>5)& 0x01);
+        // cout << ((*bitmap[i]>>4)& 0x01);
+        // cout << ((*bitmap[i]>>3)& 0x01);
+        // cout << ((*bitmap[i]>>2)& 0x01);
+        // cout << ((*bitmap[i]>>1)& 0x01);
+        // cout << ((*bitmap[i]>>0)& 0x01);
+
+        // cout << endl;
+    }
+    cout << "CHECK BITMAP " << endl;
+    
+    int count_allocated = 0;
+    for(uint i = 0; i < BSIZE * 8; i++)
+    {
+        //cout << bmap[i];
+        // if(bmap_inodes[i].marked_allocated == true)
+        //     count_allocated++;
+        if(bitmap_blocks[i].marked_allocated == true)
+        {
+            count_allocated++;
+        }
+         cout << bitmap_blocks[i].marked_allocated;
+
+        if(i % 8 == 0)
+             cout << endl;
+    }
+    cout << "count allocated = " << count_allocated << endl;
+    // for(uint i = 0; i < sb->ninodes - 1; i++)
+    // {
+    //     if(bit_is_on(bitmap_ptr, i, sb->ninodes) == true)
+    //     {   
+    //         inodes_referenced[i].marked_allocated = true;
+    //     }
+    //     else
+    //     {
+    //         inodes_referenced[i].marked_allocated = false;
+    //     }
+    // }
+
+    // for(uint i = 0; i < sb->ninodes; i++)
+    // {
+    //     cout << "on? " << inodes_referenced[i].marked_allocated << endl;
+    // }
+    
+  
+
+   vector <dinode*> inode_files;
+   vector <dinode*> inode_directories;
+   vector <dinode*> inode_unused;
+   vector <dinode*> inode_special;
+   vector <uint> block_nums;
+
+
+   set_vectors(inode_directories, inode_files, inode_unused, inode_special, dinode_array, block_nums, sb->ninodes - 1);
+   cout << "directories: " <<  inode_directories.size() << endl;
+   cout << "files: " <<  inode_files.size() << endl;
+
+   //LOAD DIRECTORIES
+
+   vector <dirent*> dirent_vec;
+
+    //loop through the inodes that are directories 
+   for (uint i = 0; i < inode_directories.size(); i++)
+   {
+       //Every directory size has to be a multiple of 512 - check that here 
+       for(uint k = 0; k < 11; k++)
+       {
+            dirent* data_section = (dirent*) (((uchar*) file_copy) + inode_directories[i]->addrs[k] * BSIZE);
+            //the data_end pointer points to the end of that block 
+            for(dirent* ptr = data_section; ptr != data_section + (BSIZE / sizeof(dirent)); ptr++)
+            {
+                //as long as it is not used, we should push each directory into the vector 
+                if(ptr->inum != 0)
+                {
+                    dirent_vec.push_back(ptr);
+                    cout << "the Inum is " << ptr->inum << " the name is " << (string)ptr->name << endl;
+                }        
+            }
+       }
+   }
+   //all checks 
+
+    //CHECK to make sure we have a valid sized file
+    int size = filesize(argv[1]); 
+   if (valid_size(sb, size) == false)
+        exit(1);
+    //CHECK that all inode sizes are valid 
+    if(inode_valid_size(dinode_array, sb->ninodes - 1) == false)
+        exit(1);
+    //CHECK to make sure that inode 1 is a directory 
+    if(check_inode_1(dinode_array) == false )
+        exit(1);
+    //CHECK to make sure that inode 0 has a type 0 - or that inode 0 is not allocated 
+    if(check_inode_0(dinode_array) == false)
+        exit(1);
+   //CHECK that first two file names are . and .. 
+    if(check_names(dirent_vec) == false)
+        exit(1);
+
+    if(check_nonroot(dirent_vec) == false)
+        exit(1);
+    if(check_repeat_directory(dirent_vec) == false)
+        exit(1);
+    //check if a block is referenced by more than one inode 
+    if(check_multiply_allocated_block(dinode_array, sb->ninodes - 1) == false)
+        exit(1);
+    if(check_if_should_be_directory(dirent_vec, dinode_array) == false)
+        exit(1);
+
+
+    close(fd);
+    munmap(file_copy, BSIZE * 1024);
+	return 0;
+}
