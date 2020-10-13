@@ -1,5 +1,5 @@
 # Crusade-Against-File-System-Corruption  
- Undergraduate Project in Computer Organization Class  
+ Undergraduate C++ Project in Computer Organization Class  
  
 ## Project Description  
 In this project you will be given one or more xv6 file systems which may or may not have been corrupted in different ways.
